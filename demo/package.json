@@ -1,0 +1,20 @@
+{
+  "name": "zksoroban-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "ts-node src/run.ts"
+  },
+  "dependencies": {
+    "@zksoroban/sdk": "file:../sdk",
+    "@stellar/stellar-sdk": "^13.3.0",
+    "circomlib": "^2.0.5",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

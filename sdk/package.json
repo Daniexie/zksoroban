@@ -1,0 +1,28 @@
+{
+  "name": "@zksoroban/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Soroban zero-knowledge proof formatting and verification",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "commonjs",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && tsx --test test/**/*.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.3.0",
+    "circomlibjs": "^0.1.7",
+    "ffjavascript": "^0.3.1"
+  },
+  "peerDependencies": {
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
+  }
+}
