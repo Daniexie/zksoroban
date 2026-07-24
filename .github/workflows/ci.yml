@@ -31,3 +31,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --manifest-path contracts/verifier/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/registry/Cargo.toml --locked
+
+  circuits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install circom
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/circom" https://github.com/iden3/circom/releases/download/v2.2.3/circom-linux-amd64
+          chmod +x "$HOME/.local/bin/circom"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: circom --version
+      - run: npm install
+      - run: npm run test:circuits

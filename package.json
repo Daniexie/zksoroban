@@ -1,0 +1,15 @@
+{
+  "name": "zksoroban",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Circuit constraint test harness for zksoroban circuits.",
+  "scripts": {
+    "test:circuits": "mocha circuits/test/**/*.test.js --timeout 120000"
+  },
+  "devDependencies": {
+    "circom_tester": "^0.0.24",
+    "circomlib": "^2.0.5",
+    "circomlibjs": "^0.1.7",
+    "mocha": "^11.7.6"
+  }
+}
