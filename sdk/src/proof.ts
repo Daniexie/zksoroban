@@ -3,8 +3,8 @@ import {
   SorobanProofCalldata,
   SorobanZkError,
   SorobanZkErrorCode
-} from "./types";
-import { validateProofInput } from "./validate";
+} from "./types.js";
+import { validateProofInput } from "./validate.js";
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;

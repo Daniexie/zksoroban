@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { SorobanZkError, SorobanZkErrorCode } from "./types";
+import { SorobanZkError, SorobanZkErrorCode } from "./types.js";
 
 const BN254_SCALAR_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;

@@ -1,8 +1,8 @@
-export * from "./poseidon";
-export * from "./proof";
-export * from "./types";
-export * from "./validate";
-export * from "./verify";
-export * from "./verifyOffChain";
-export * from "./version";
+export * from "./poseidon.js";
+export * from "./proof.js";
+export * from "./types.js";
+export * from "./validate.js";
+export * from "./verify.js";
+export * from "./verifyOffChain.js";
+export * from "./version.js";
 

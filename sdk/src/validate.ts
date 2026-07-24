@@ -3,7 +3,7 @@ import {
   SorobanProofCalldata,
   SorobanZkErrorCode,
   ZkInputError
-} from "./types";
+} from "./types.js";
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;

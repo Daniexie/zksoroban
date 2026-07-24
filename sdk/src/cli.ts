@@ -1,8 +1,8 @@
 import fs from "node:fs";
 
-import { formatProof } from "./proof";
-import { poseidon } from "./poseidon";
-import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode } from "./types";
+import { formatProof } from "./proof.js";
+import { poseidon } from "./poseidon.js";
+import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode } from "./types.js";
 
 interface InspectableBundle {
   proof: SnarkjsProof;
