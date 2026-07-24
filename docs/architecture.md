@@ -85,8 +85,9 @@ The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at 
 ## Contract Layer
 
 The Soroban verifier contract stores no proofs or nullifiers, but it is
-no longer fully stateless: it holds an admin address and per-caller
-rate-limit state (see Auth Model below).
+no longer fully stateless: it holds an admin address, per-caller
+rate-limit state (see Auth Model below), and — as of the storage-backed
+verifying key — the verifying key itself.
 
 The contract:
 
@@ -95,11 +96,21 @@ The contract:
 3. parses `proof_a`, `proof_b`, `proof_c`
 4. parses the public input field element and the `expiry_ledger` field,
    rejecting proofs whose expiry has already passed
-5. reconstructs `vk_x = IC[0] + IC[1] * public_input`
+5. reads the currently-stored verifying key and reconstructs
+   `vk_x = IC[0] + IC[1] * public_input`
 6. runs the Groth16 BN254 pairing equation
 7. returns `true` or `false`
 
-The verifying key is hardcoded for the reference circuit. That keeps the MVP small and auditable.
+The verifying key is set at construction time (`__constructor` takes a
+`VerifyingKey` argument alongside `admin`) and can be replaced later via
+`update_vk`, which requires the stored admin's auth and validates the
+new key's `ic` length matches what this circuit's public-input count
+expects. This means a circuit's verifying key can now be rotated without
+a full contract redeploy — the original motivation for this design (see
+[zksoroban#9](https://github.com/yusufadeagbo/zksoroban/issues/9)) — at
+the cost of a real trust-model change: see
+[`docs/security-model.md`](security-model.md)'s Trust Assumptions for
+what a compromised admin key can now do that it couldn't before.
 
 Current Testnet deployment:
 `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`
@@ -216,11 +227,15 @@ nothing proof- or nullifier-related):
 - cheaper to invoke
 - enough for an MVP reference implementation
 
-Why the verifying key is hardcoded:
+Why the verifying key is storage-backed rather than hardcoded:
 
-- this repo demonstrates one reference circuit
-- removing dynamic key management reduces moving parts
-- multi-circuit key registries are future work
+- a circuit's key can be rotated (new trusted setup, fixed a bug in the
+  original ceremony, etc.) without a full contract redeploy, which
+  would otherwise break every existing integration's contract address
+- this is still a single-circuit verifier — `ic` length is validated
+  against this circuit's fixed public-input count, not made fully
+  generic; `contracts/registry` is the separate contract for genuinely
+  multi-circuit support
 
 Why Groth16:
 
