@@ -1,6 +1,8 @@
 import {
+  Account,
   BASE_FEE,
   Contract,
+  Keypair,
   TransactionBuilder,
   rpc,
   scValToNative,
@@ -9,6 +11,7 @@ import {
 
 import { formatProof } from "./proof";
 import {
+  ContractConfig,
   NetworkMismatchError,
   ProofBundle,
   SorobanProofCalldata,
@@ -177,6 +180,113 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       throw error;
     }
 
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// getContractConfig — read-only view of all non-sensitive contract settings
+// ---------------------------------------------------------------------------
+
+/**
+ * Options accepted by {@link getContractConfig}.
+ */
+export interface GetContractConfigOptions {
+  /** Soroban RPC endpoint URL. */
+  rpcUrl: string;
+  /** Bech32m contract address (starts with `C`). */
+  contractId: string;
+}
+
+/**
+ * Call the `get_config` view function on a deployed verifier contract and
+ * return a typed {@link ContractConfig} object.
+ *
+ * This is a simulation-only call: no transaction is submitted, no fee is
+ * charged, and no Keypair is required.
+ *
+ * @example
+ * ```ts
+ * const config = await getContractConfig({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ * });
+ * console.log(config.rateLimitMax, config.rateLimitWindow);
+ * ```
+ */
+export async function getContractConfig(
+  opts: GetContractConfigOptions
+): Promise<ContractConfig> {
+  try {
+    const server = new rpc.Server(opts.rpcUrl, {
+      allowHttp: opts.rpcUrl.startsWith("http://")
+    });
+    const network = await server.getNetwork();
+    const contract = new Contract(opts.contractId);
+
+    // Build a transaction for simulation purposes only.  We use a throw-away
+    // ephemeral keypair because no signing or fee payment happens — only
+    // simulateTransaction() is called and the transaction is never submitted.
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      // If the ephemeral account is not funded on the network (expected), fall
+      // back to a synthetic Account at sequence 0.
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(contract.call("get_config"))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `get_config simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "get_config simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    // The SDK auto-decodes the XDR return value into a plain JS object.
+    const raw = scValToNative(simResult.result.retval) as {
+      admin: string;
+      paused: boolean;
+      fee_amount: bigint | null | undefined;
+      fee_token: string | null | undefined;
+      rate_limit_max: number;
+      rate_limit_window: number;
+      timelock_delay: number | null | undefined;
+      allowlist_enabled: boolean;
+    };
+
+    return {
+      admin: String(raw.admin),
+      paused: Boolean(raw.paused),
+      feeAmount: raw.fee_amount != null ? BigInt(raw.fee_amount) : undefined,
+      feeToken: raw.fee_token != null ? String(raw.fee_token) : undefined,
+      rateLimitMax: Number(raw.rate_limit_max),
+      rateLimitWindow: Number(raw.rate_limit_window),
+      timelockDelay: raw.timelock_delay != null ? Number(raw.timelock_delay) : undefined,
+      allowlistEnabled: Boolean(raw.allowlist_enabled)
+    };
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
     throw classifyError(error);
   }
 }
