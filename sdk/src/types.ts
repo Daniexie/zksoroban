@@ -88,3 +88,30 @@ export class NetworkMismatchError extends SorobanZkError {
   }
 }
 
+/**
+ * A read-only snapshot of all non-sensitive verifier contract configuration
+ * fields, as returned by the `get_config` contract function.
+ *
+ * Fields that the current contract does not implement (fee, timelock, etc.)
+ * are returned as `undefined` / `false` so callers can detect at runtime
+ * whether a feature is active without needing to know the contract version.
+ */
+export interface ContractConfig {
+  /** Contract administrator Stellar address (G… or C…). */
+  admin: string;
+  /** Whether the contract is paused. Always `false` in the current version. */
+  paused: boolean;
+  /** Optional fee amount in stroops. `undefined` when not configured. */
+  feeAmount: bigint | undefined;
+  /** Optional fee token contract address. `undefined` when not configured. */
+  feeToken: string | undefined;
+  /** Maximum `verify_proof` calls allowed per caller per rate-limit window. */
+  rateLimitMax: number;
+  /** Rate-limit window size in ledgers. */
+  rateLimitWindow: number;
+  /** Timelock delay in ledgers. `undefined` when not configured. */
+  timelockDelay: number | undefined;
+  /** Whether an allowlist is enforced. Always `false` in the current version. */
+  allowlistEnabled: boolean;
+}
+

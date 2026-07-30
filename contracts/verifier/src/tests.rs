@@ -243,6 +243,50 @@ fn admin_can_update_limits() {
     assert!(call_valid(&env, &client, &caller));
 }
 
+#[test]
+fn get_config_returns_initialized_values() {
+    let (env, admin, client) = setup(7, 42);
+
+    let config = client.get_config();
+
+    // Admin matches what was passed to __constructor.
+    assert_eq!(config.admin, admin);
+    // Rate-limit fields reflect the constructor arguments.
+    assert_eq!(config.rate_limit_max, 7);
+    assert_eq!(config.rate_limit_window, 42);
+    // Unimplemented features are zero-valued / absent.
+    assert!(!config.paused);
+    assert!(config.fee_amount.is_none());
+    assert!(config.fee_token.is_none());
+    assert!(config.timelock_delay.is_none());
+    // Allowlisting is implemented but off by default until enabled.
+    assert!(!config.allowlist_enabled);
+}
+
+#[test]
+fn get_config_reflects_updated_limits() {
+    let (_env, _admin, client) = setup(1, 10);
+
+    client.set_limits(&20, &200);
+
+    let config = client.get_config();
+    assert_eq!(config.rate_limit_max, 20);
+    assert_eq!(config.rate_limit_window, 200);
+}
+
+#[test]
+fn get_config_reflects_allowlist_mode() {
+    let (_env, _admin, client) = setup(1, 10);
+
+    assert!(!client.get_config().allowlist_enabled);
+
+    client.set_allowlist_mode(&true);
+    assert!(client.get_config().allowlist_enabled);
+
+    client.set_allowlist_mode(&false);
+    assert!(!client.get_config().allowlist_enabled);
+}
+
 // The tests above all use setup(), which calls env.mock_all_auths() —
 // meaning require_auth() succeeds for every address unconditionally,
 // including these two negative cases if run through that helper. These

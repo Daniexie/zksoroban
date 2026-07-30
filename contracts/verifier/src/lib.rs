@@ -70,6 +70,29 @@ pub struct Limits {
     pub window_size: u32,
 }
 
+/// A read-only snapshot of all non-sensitive contract configuration fields.
+/// Fields that the current contract does not implement are returned as `None`.
+#[contracttype]
+#[derive(Clone)]
+pub struct ContractConfig {
+    /// The contract administrator address.
+    pub admin: Address,
+    /// Whether the contract is paused (not implemented; always `false`).
+    pub paused: bool,
+    /// Optional fee amount in stroops (not implemented; always `None`).
+    pub fee_amount: Option<i128>,
+    /// Optional fee token contract address (not implemented; always `None`).
+    pub fee_token: Option<Address>,
+    /// Maximum number of `verify_proof` calls allowed per caller per window.
+    pub rate_limit_max: u32,
+    /// Rate-limit window size in ledgers.
+    pub rate_limit_window: u32,
+    /// Timelock delay in ledgers (not implemented; always `None`).
+    pub timelock_delay: Option<u32>,
+    /// Whether the caller allowlist is currently enforced.
+    pub allowlist_enabled: bool,
+}
+
 #[contracttype]
 enum DataKey {
     Admin,
@@ -186,6 +209,39 @@ impl VerifierContract {
             .instance()
             .get(&DataKey::Allowlist(addr))
             .unwrap_or(false)
+    }
+
+    /// Return a snapshot of all non-sensitive contract configuration fields.
+    /// This is a read-only view: no auth is required and no state is mutated.
+    pub fn get_config(env: Env) -> Result<ContractConfig, Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
+        let limits: Limits = env
+            .storage()
+            .instance()
+            .get(&DataKey::Limits)
+            .ok_or(Error::NotInitialized)?;
+
+        let allowlist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false);
+
+        Ok(ContractConfig {
+            admin,
+            paused: false,
+            fee_amount: None,
+            fee_token: None,
+            rate_limit_max: limits.max_calls,
+            rate_limit_window: limits.window_size,
+            timelock_delay: None,
+            allowlist_enabled,
+        })
     }
 
     pub fn verify_proof(
