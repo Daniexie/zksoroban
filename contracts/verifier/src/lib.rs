@@ -75,6 +75,8 @@ enum DataKey {
     Admin,
     Limits,
     CallCount(Address, u32),
+    AllowlistEnabled,
+    Allowlist(Address),
 }
 
 #[contracterror]
@@ -85,6 +87,7 @@ pub enum Error {
     RateLimitExceeded = 2,
     InvalidWindowSize = 3,
     ProofExpired = 4,
+    CallerNotAllowed = 5,
 }
 
 #[contract]
@@ -129,6 +132,62 @@ impl VerifierContract {
         Ok(())
     }
 
+    pub fn set_allowlist_mode(env: Env, enabled: bool) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistEnabled, &enabled);
+        Ok(())
+    }
+
+    pub fn allowlist_enabled(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false)
+    }
+
+    pub fn add_to_allowlist(env: Env, addr: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Allowlist(addr), &true);
+        Ok(())
+    }
+
+    pub fn remove_from_allowlist(env: Env, addr: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::Allowlist(addr));
+        Ok(())
+    }
+
+    pub fn is_allowlisted(env: Env, addr: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Allowlist(addr))
+            .unwrap_or(false)
+    }
+
     pub fn verify_proof(
         env: Env,
         caller: Address,
@@ -138,6 +197,22 @@ impl VerifierContract {
         public_inputs: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
         caller.require_auth();
+
+        let allowlist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false);
+        if allowlist_enabled {
+            let allowed: bool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Allowlist(caller.clone()))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(Error::CallerNotAllowed);
+            }
+        }
 
         let limits: Limits = env
             .storage()

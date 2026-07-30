@@ -271,3 +271,95 @@ fn set_limits_rejects_call_with_no_authorization() {
 
     client.set_limits(&5, &50);
 }
+
+#[test]
+fn disabled_mode_allows_anyone() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    assert!(!client.allowlist_enabled());
+    assert!(call_valid(&env, &client, &caller));
+}
+
+#[test]
+fn enabled_mode_blocks_unlisted_caller() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.set_allowlist_mode(&true);
+    assert!(client.allowlist_enabled());
+    assert!(!client.is_allowlisted(&caller));
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+}
+
+#[test]
+fn listed_caller_succeeds_when_allowlist_enabled() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.set_allowlist_mode(&true);
+    client.add_to_allowlist(&caller);
+    assert!(client.is_allowlisted(&caller));
+
+    assert!(call_valid(&env, &client, &caller));
+
+    client.remove_from_allowlist(&caller);
+    assert!(!client.is_allowlisted(&caller));
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+}
+
+#[test]
+#[should_panic]
+fn set_allowlist_mode_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    client.set_allowlist_mode(&true);
+}
+
+#[test]
+#[should_panic]
+fn add_to_allowlist_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+
+    client.add_to_allowlist(&user);
+}
+
+#[test]
+#[should_panic]
+fn remove_from_allowlist_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+
+    client.remove_from_allowlist(&user);
+}
