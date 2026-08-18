@@ -49,6 +49,23 @@ export interface VerifyResult {
   fee: string;
 }
 
+/**
+ * Options accepted by {@link verifyViaRegistry}.
+ *
+ * Unlike {@link VerifyOptions}, no `keypair` is needed: `contracts/registry`'s
+ * `verify_proof(id, ...)` requires no auth and mutates no storage, so this
+ * call is simulation-only, exactly like {@link GetContractConfigOptions}.
+ */
+export interface VerifyViaRegistryOptions {
+  rpcUrl: string;
+  /** Bech32m address of the deployed `contracts/registry` instance. */
+  registryContractId: string;
+  /** The `id` a circuit was registered under via `register_circuit`. */
+  circuitId: number;
+  calldata?: SorobanProofCalldata;
+  bundle?: ProofBundle;
+}
+
 export enum SorobanZkErrorCode {
   INVALID_PROOF_FORMAT = "INVALID_PROOF_FORMAT",
   INVALID_PUBLIC_INPUT = "INVALID_PUBLIC_INPUT",
