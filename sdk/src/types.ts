@@ -56,7 +56,15 @@ export enum SorobanZkErrorCode {
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
   RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
-  NETWORK_MISMATCH = "NETWORK_MISMATCH"
+  NETWORK_MISMATCH = "NETWORK_MISMATCH",
+  // Mirror contracts/verifier's `Error` enum (contracterror, repr(u32)) so a
+  // caller can distinguish these from each other and from generic failures,
+  // instead of every contract-level rejection collapsing into `false`.
+  CONTRACT_NOT_INITIALIZED = "CONTRACT_NOT_INITIALIZED",
+  RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
+  INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
+  PROOF_EXPIRED = "PROOF_EXPIRED",
+  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED"
 }
 
 export class SorobanZkError extends Error {

@@ -1,5 +1,6 @@
 import {
   Account,
+  Address,
   BASE_FEE,
   Contract,
   Keypair,
@@ -37,8 +38,34 @@ function feeFromResult(result: xdr.TransactionResult): string {
   return result.feeCharged().toString();
 }
 
+// Maps contracts/verifier's `Error` enum (#[contracterror], repr(u32)) to a
+// typed SorobanZkErrorCode. Soroban tooling (simulation errors, stellar-cli)
+// renders a contract error as the literal substring `Error(Contract, #N)`,
+// so that's what we match against rather than parsing raw XDR.
+const CONTRACT_ERROR_CODES: Record<number, SorobanZkErrorCode> = {
+  1: SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED,
+  2: SorobanZkErrorCode.RATE_LIMIT_EXCEEDED,
+  3: SorobanZkErrorCode.INVALID_WINDOW_SIZE,
+  4: SorobanZkErrorCode.PROOF_EXPIRED,
+  5: SorobanZkErrorCode.CALLER_NOT_ALLOWED
+};
+
+function extractContractErrorCode(message: string): SorobanZkErrorCode | undefined {
+  const match = message.match(/Error\(Contract,\s*#(\d+)\)/);
+  if (!match) {
+    return undefined;
+  }
+  return CONTRACT_ERROR_CODES[Number(match[1])];
+}
+
 function classifyError(error: unknown): SorobanZkError {
   const message = error instanceof Error ? error.message : String(error);
+
+  const contractErrorCode = extractContractErrorCode(message);
+  if (contractErrorCode) {
+    return new SorobanZkError(message, contractErrorCode);
+  }
+
   const lowered = message.toLowerCase();
 
   if (lowered.includes("resource") || lowered.includes("instruction") || lowered.includes("limit")) {
@@ -111,6 +138,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
     const account = await server.getAccount(opts.keypair.publicKey());
     const contract = new Contract(opts.contractId);
+    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
 
     const transaction = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -119,6 +147,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       .addOperation(
         contract.call(
           "verify_proof",
+          callerScVal,
           makeBytesScVal(calldata.proofA),
           makeBytesScVal(calldata.proofB),
           makeBytesScVal(calldata.proofC),
@@ -149,6 +178,13 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       }
 
       if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+        // A `Result::Err` from `verify_proof` is normally caught below, at
+        // `prepareTransaction`'s simulation step, since simulation executes
+        // the call against current ledger state deterministically. Reaching
+        // FAILED here means the transaction was rejected *after* a
+        // successful simulation (e.g. ledger state changed between
+        // simulating and applying), so there's no reliable Error(Contract,
+        // #N) string to decode from diagnostic events at this point.
         throw new SorobanZkError(
           `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
