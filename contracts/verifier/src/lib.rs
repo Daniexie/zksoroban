@@ -70,11 +70,36 @@ pub struct Limits {
     pub window_size: u32,
 }
 
+/// A read-only snapshot of all non-sensitive contract configuration fields.
+/// Fields that the current contract does not implement are returned as `None`.
+#[contracttype]
+#[derive(Clone)]
+pub struct ContractConfig {
+    /// The contract administrator address.
+    pub admin: Address,
+    /// Whether the contract is paused (not implemented; always `false`).
+    pub paused: bool,
+    /// Optional fee amount in stroops (not implemented; always `None`).
+    pub fee_amount: Option<i128>,
+    /// Optional fee token contract address (not implemented; always `None`).
+    pub fee_token: Option<Address>,
+    /// Maximum number of `verify_proof` calls allowed per caller per window.
+    pub rate_limit_max: u32,
+    /// Rate-limit window size in ledgers.
+    pub rate_limit_window: u32,
+    /// Timelock delay in ledgers (not implemented; always `None`).
+    pub timelock_delay: Option<u32>,
+    /// Whether the caller allowlist is currently enforced.
+    pub allowlist_enabled: bool,
+}
+
 #[contracttype]
 enum DataKey {
     Admin,
     Limits,
     CallCount(Address, u32),
+    AllowlistEnabled,
+    Allowlist(Address),
 }
 
 #[contracterror]
@@ -85,6 +110,7 @@ pub enum Error {
     RateLimitExceeded = 2,
     InvalidWindowSize = 3,
     ProofExpired = 4,
+    CallerNotAllowed = 5,
 }
 
 #[contract]
@@ -129,6 +155,95 @@ impl VerifierContract {
         Ok(())
     }
 
+    pub fn set_allowlist_mode(env: Env, enabled: bool) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistEnabled, &enabled);
+        Ok(())
+    }
+
+    pub fn allowlist_enabled(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false)
+    }
+
+    pub fn add_to_allowlist(env: Env, addr: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Allowlist(addr), &true);
+        Ok(())
+    }
+
+    pub fn remove_from_allowlist(env: Env, addr: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::Allowlist(addr));
+        Ok(())
+    }
+
+    pub fn is_allowlisted(env: Env, addr: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Allowlist(addr))
+            .unwrap_or(false)
+    }
+
+    /// Return a snapshot of all non-sensitive contract configuration fields.
+    /// This is a read-only view: no auth is required and no state is mutated.
+    pub fn get_config(env: Env) -> Result<ContractConfig, Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
+        let limits: Limits = env
+            .storage()
+            .instance()
+            .get(&DataKey::Limits)
+            .ok_or(Error::NotInitialized)?;
+
+        let allowlist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false);
+
+        Ok(ContractConfig {
+            admin,
+            paused: false,
+            fee_amount: None,
+            fee_token: None,
+            rate_limit_max: limits.max_calls,
+            rate_limit_window: limits.window_size,
+            timelock_delay: None,
+            allowlist_enabled,
+        })
+    }
+
     pub fn verify_proof(
         env: Env,
         caller: Address,
@@ -139,6 +254,22 @@ impl VerifierContract {
     ) -> Result<bool, Error> {
         caller.require_auth();
 
+        let allowlist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false);
+        if allowlist_enabled {
+            let allowed: bool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Allowlist(caller.clone()))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(Error::CallerNotAllowed);
+            }
+        }
+
         let limits: Limits = env
             .storage()
             .instance()
@@ -148,12 +279,15 @@ impl VerifierContract {
         let ledger = env.ledger().sequence();
         let window_start = ledger - (ledger % limits.window_size);
         let count_key = DataKey::CallCount(caller.clone(), window_start);
-        let current: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
         let next = current + 1;
         if next > limits.max_calls {
             return Err(Error::RateLimitExceeded);
         }
-        env.storage().instance().set(&count_key, &next);
+        env.storage().temporary().set(&count_key, &next);
+        env.storage()
+            .temporary()
+            .extend_ttl(&count_key, limits.window_size, limits.window_size);
 
         let proof_a = read_g1(&env, &proof_a, "proof_a");
         let proof_b = read_g2(&env, &proof_b, "proof_b");

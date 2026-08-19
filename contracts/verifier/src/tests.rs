@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Temporary as _;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, String, Vec};
 
@@ -219,6 +220,28 @@ fn window_expiry_resets_counter() {
 }
 
 #[test]
+fn call_count_lives_in_temporary_storage_with_window_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % 50u32);
+    let count_key = DataKey::CallCount(caller, window_start);
+
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().instance().has(&count_key));
+        assert!(env.storage().temporary().has(&count_key));
+        assert!(env.storage().temporary().get_ttl(&count_key) >= 50u32);
+    });
+}
+
+#[test]
 fn separate_callers_have_independent_counters() {
     let (env, _admin, client) = setup(1, 100);
     let alice = Address::generate(&env);
@@ -241,6 +264,50 @@ fn admin_can_update_limits() {
     let caller = Address::generate(&env);
     assert!(call_valid(&env, &client, &caller));
     assert!(call_valid(&env, &client, &caller));
+}
+
+#[test]
+fn get_config_returns_initialized_values() {
+    let (env, admin, client) = setup(7, 42);
+
+    let config = client.get_config();
+
+    // Admin matches what was passed to __constructor.
+    assert_eq!(config.admin, admin);
+    // Rate-limit fields reflect the constructor arguments.
+    assert_eq!(config.rate_limit_max, 7);
+    assert_eq!(config.rate_limit_window, 42);
+    // Unimplemented features are zero-valued / absent.
+    assert!(!config.paused);
+    assert!(config.fee_amount.is_none());
+    assert!(config.fee_token.is_none());
+    assert!(config.timelock_delay.is_none());
+    // Allowlisting is implemented but off by default until enabled.
+    assert!(!config.allowlist_enabled);
+}
+
+#[test]
+fn get_config_reflects_updated_limits() {
+    let (_env, _admin, client) = setup(1, 10);
+
+    client.set_limits(&20, &200);
+
+    let config = client.get_config();
+    assert_eq!(config.rate_limit_max, 20);
+    assert_eq!(config.rate_limit_window, 200);
+}
+
+#[test]
+fn get_config_reflects_allowlist_mode() {
+    let (_env, _admin, client) = setup(1, 10);
+
+    assert!(!client.get_config().allowlist_enabled);
+
+    client.set_allowlist_mode(&true);
+    assert!(client.get_config().allowlist_enabled);
+
+    client.set_allowlist_mode(&false);
+    assert!(!client.get_config().allowlist_enabled);
 }
 
 // The tests above all use setup(), which calls env.mock_all_auths() —
@@ -270,4 +337,96 @@ fn set_limits_rejects_call_with_no_authorization() {
     let client = VerifierContractClient::new(&env, &contract_id);
 
     client.set_limits(&5, &50);
+}
+
+#[test]
+fn disabled_mode_allows_anyone() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    assert!(!client.allowlist_enabled());
+    assert!(call_valid(&env, &client, &caller));
+}
+
+#[test]
+fn enabled_mode_blocks_unlisted_caller() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.set_allowlist_mode(&true);
+    assert!(client.allowlist_enabled());
+    assert!(!client.is_allowlisted(&caller));
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+}
+
+#[test]
+fn listed_caller_succeeds_when_allowlist_enabled() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.set_allowlist_mode(&true);
+    client.add_to_allowlist(&caller);
+    assert!(client.is_allowlisted(&caller));
+
+    assert!(call_valid(&env, &client, &caller));
+
+    client.remove_from_allowlist(&caller);
+    assert!(!client.is_allowlisted(&caller));
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+}
+
+#[test]
+#[should_panic]
+fn set_allowlist_mode_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    client.set_allowlist_mode(&true);
+}
+
+#[test]
+#[should_panic]
+fn add_to_allowlist_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+
+    client.add_to_allowlist(&user);
+}
+
+#[test]
+#[should_panic]
+fn remove_from_allowlist_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+
+    client.remove_from_allowlist(&user);
 }

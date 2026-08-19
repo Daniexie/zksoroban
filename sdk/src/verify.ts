@@ -1,6 +1,9 @@
 import {
+  Account,
+  Address,
   BASE_FEE,
   Contract,
+  Keypair,
   TransactionBuilder,
   rpc,
   scValToNative,
@@ -9,13 +12,15 @@ import {
 
 import { formatProof } from "./proof";
 import {
+  ContractConfig,
   NetworkMismatchError,
   ProofBundle,
   SorobanProofCalldata,
   SorobanZkError,
   SorobanZkErrorCode,
   VerifyOptions,
-  VerifyResult
+  VerifyResult,
+  VerifyViaRegistryOptions
 } from "./types";
 import { validateCalldata } from "./validate";
 
@@ -34,8 +39,34 @@ function feeFromResult(result: xdr.TransactionResult): string {
   return result.feeCharged().toString();
 }
 
+// Maps contracts/verifier's `Error` enum (#[contracterror], repr(u32)) to a
+// typed SorobanZkErrorCode. Soroban tooling (simulation errors, stellar-cli)
+// renders a contract error as the literal substring `Error(Contract, #N)`,
+// so that's what we match against rather than parsing raw XDR.
+const CONTRACT_ERROR_CODES: Record<number, SorobanZkErrorCode> = {
+  1: SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED,
+  2: SorobanZkErrorCode.RATE_LIMIT_EXCEEDED,
+  3: SorobanZkErrorCode.INVALID_WINDOW_SIZE,
+  4: SorobanZkErrorCode.PROOF_EXPIRED,
+  5: SorobanZkErrorCode.CALLER_NOT_ALLOWED
+};
+
+function extractContractErrorCode(message: string): SorobanZkErrorCode | undefined {
+  const match = message.match(/Error\(Contract,\s*#(\d+)\)/);
+  if (!match) {
+    return undefined;
+  }
+  return CONTRACT_ERROR_CODES[Number(match[1])];
+}
+
 function classifyError(error: unknown): SorobanZkError {
   const message = error instanceof Error ? error.message : String(error);
+
+  const contractErrorCode = extractContractErrorCode(message);
+  if (contractErrorCode) {
+    return new SorobanZkError(message, contractErrorCode);
+  }
+
   const lowered = message.toLowerCase();
 
   if (lowered.includes("resource") || lowered.includes("instruction") || lowered.includes("limit")) {
@@ -108,6 +139,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
     const account = await server.getAccount(opts.keypair.publicKey());
     const contract = new Contract(opts.contractId);
+    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
 
     const transaction = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -116,6 +148,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       .addOperation(
         contract.call(
           "verify_proof",
+          callerScVal,
           makeBytesScVal(calldata.proofA),
           makeBytesScVal(calldata.proofB),
           makeBytesScVal(calldata.proofC),
@@ -146,6 +179,13 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       }
 
       if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+        // A `Result::Err` from `verify_proof` is normally caught below, at
+        // `prepareTransaction`'s simulation step, since simulation executes
+        // the call against current ledger state deterministically. Reaching
+        // FAILED here means the transaction was rejected *after* a
+        // successful simulation (e.g. ledger state changed between
+        // simulating and applying), so there's no reliable Error(Contract,
+        // #N) string to decode from diagnostic events at this point.
         throw new SorobanZkError(
           `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
@@ -177,6 +217,220 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       throw error;
     }
 
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// verifyViaRegistry — verify a proof against a circuit registered with
+// contracts/registry, keyed by circuit ID instead of a hardcoded VK
+// ---------------------------------------------------------------------------
+
+function resolveRegistryCalldata(opts: VerifyViaRegistryOptions): SorobanProofCalldata {
+  if (opts.calldata) {
+    return opts.calldata;
+  }
+
+  if (opts.bundle) {
+    return formatProof(opts.bundle.proof, opts.bundle.publicSignals);
+  }
+
+  throw new SorobanZkError(
+    "verifyViaRegistry requires either calldata or a bundle",
+    SorobanZkErrorCode.INVALID_PROOF_FORMAT
+  );
+}
+
+/**
+ * Verify a proof against a circuit registered with `contracts/registry`'s
+ * `verify_proof(id, proof_a, proof_b, proof_c, public_inputs)`.
+ *
+ * Unlike {@link verifyOnChain} (which targets the single-circuit
+ * `contracts/verifier` and requires a signing `keypair`, since that
+ * contract enforces per-caller auth and rate-limiting), the registry's
+ * `verify_proof` requires no auth and mutates no storage — so this is a
+ * simulation-only call, the same shape as {@link getContractConfig}. No
+ * transaction is submitted, no fee is charged, and no Keypair is needed.
+ *
+ * @example
+ * ```ts
+ * const verified = await verifyViaRegistry({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   registryContractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH",
+ *   circuitId: 2, // range_proof, once registered — see docs/multi-circuit.md
+ *   bundle,
+ * });
+ * ```
+ */
+export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise<boolean> {
+  const calldata = resolveRegistryCalldata(opts);
+  validateCalldata(calldata);
+
+  try {
+    const server = new rpc.Server(opts.rpcUrl, {
+      allowHttp: opts.rpcUrl.startsWith("http://")
+    });
+    const network = await server.getNetwork();
+
+    if (opts.bundle) {
+      assertBundleNetwork(opts.bundle, network.passphrase);
+    }
+
+    const contract = new Contract(opts.registryContractId);
+
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(
+        contract.call(
+          "verify_proof",
+          xdr.ScVal.scvU32(opts.circuitId),
+          makeBytesScVal(calldata.proofA),
+          makeBytesScVal(calldata.proofB),
+          makeBytesScVal(calldata.proofC),
+          makePublicInputsScVal(calldata.publicInputs)
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `verify_proof simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "verify_proof simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    return Boolean(scValToNative(simResult.result.retval));
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// getContractConfig — read-only view of all non-sensitive contract settings
+// ---------------------------------------------------------------------------
+
+/**
+ * Options accepted by {@link getContractConfig}.
+ */
+export interface GetContractConfigOptions {
+  /** Soroban RPC endpoint URL. */
+  rpcUrl: string;
+  /** Bech32m contract address (starts with `C`). */
+  contractId: string;
+}
+
+/**
+ * Call the `get_config` view function on a deployed verifier contract and
+ * return a typed {@link ContractConfig} object.
+ *
+ * This is a simulation-only call: no transaction is submitted, no fee is
+ * charged, and no Keypair is required.
+ *
+ * @example
+ * ```ts
+ * const config = await getContractConfig({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ * });
+ * console.log(config.rateLimitMax, config.rateLimitWindow);
+ * ```
+ */
+export async function getContractConfig(
+  opts: GetContractConfigOptions
+): Promise<ContractConfig> {
+  try {
+    const server = new rpc.Server(opts.rpcUrl, {
+      allowHttp: opts.rpcUrl.startsWith("http://")
+    });
+    const network = await server.getNetwork();
+    const contract = new Contract(opts.contractId);
+
+    // Build a transaction for simulation purposes only.  We use a throw-away
+    // ephemeral keypair because no signing or fee payment happens — only
+    // simulateTransaction() is called and the transaction is never submitted.
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      // If the ephemeral account is not funded on the network (expected), fall
+      // back to a synthetic Account at sequence 0.
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(contract.call("get_config"))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `get_config simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "get_config simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    // The SDK auto-decodes the XDR return value into a plain JS object.
+    const raw = scValToNative(simResult.result.retval) as {
+      admin: string;
+      paused: boolean;
+      fee_amount: bigint | null | undefined;
+      fee_token: string | null | undefined;
+      rate_limit_max: number;
+      rate_limit_window: number;
+      timelock_delay: number | null | undefined;
+      allowlist_enabled: boolean;
+    };
+
+    return {
+      admin: String(raw.admin),
+      paused: Boolean(raw.paused),
+      feeAmount: raw.fee_amount != null ? BigInt(raw.fee_amount) : undefined,
+      feeToken: raw.fee_token != null ? String(raw.fee_token) : undefined,
+      rateLimitMax: Number(raw.rate_limit_max),
+      rateLimitWindow: Number(raw.rate_limit_window),
+      timelockDelay: raw.timelock_delay != null ? Number(raw.timelock_delay) : undefined,
+      allowlistEnabled: Boolean(raw.allowlist_enabled)
+    };
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
     throw classifyError(error);
   }
 }
