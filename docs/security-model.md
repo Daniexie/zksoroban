@@ -53,14 +53,17 @@ What `zksoroban` actually provides, end to end:
   false. **Do not treat a testnet deployment of this reference circuit as
   trustworthy for anything of real value.** A real deployment needs its
   own multi-party ceremony with the toxic waste provably destroyed.
-- **The admin key is fully trusted for its scope.** `contracts/verifier`'s
-  admin can call `set_limits` to change the per-caller rate-limiting
-  window and cap. A compromised admin key lets an attacker either starve
-  legitimate callers (setting `max_calls` to 0 or near-0) or remove rate
-  limiting entirely (setting it arbitrarily high) — it **cannot** forge a
-  proof, bypass the pairing check, or read any private witness. The
-  blast radius of a compromised admin key is availability/rate-limiting,
-  not soundness or privacy.
+- **The admin key can now break soundness, not just availability.**
+  `contracts/verifier`'s admin can call `set_limits` (rate-limiting
+  window/cap) and, as of the storage-backed verifying key, `update_vk`.
+  A compromised admin key can still starve callers or remove rate
+  limiting entirely — but it can **also install an arbitrary verifying
+  key**, which means it can make the contract accept a proof for a
+  statement that isn't true. This is a real escalation from the
+  rate-limiting-only blast radius this document previously described:
+  the admin key is now a full trust anchor for soundness, not just
+  availability. It still cannot read any private witness — nothing
+  about `update_vk` exposes what any prover's `secret` was.
 - **The BN254 pairing and Poseidon hash are assumed secure.** Like any
   Groth16/BN254 system, this stack inherits the standard cryptographic
   assumptions of that curve and hash function. `zksoroban` does not
@@ -84,7 +87,7 @@ What `zksoroban` actually provides, end to end:
 | Forged proof for a false statement | Controls the trusted setup's toxic waste (only realistic if they generated it, or the ceremony was compromised) | Complete break — contract accepts a proof for a statement that isn't true | **Accepted risk on testnet** (setup is explicitly not production-grade); **mitigation for production** is a real multi-party ceremony with provable toxic-waste destruction |
 | Proof replay | None beyond ability to resubmit previously-seen, still-valid transaction data | The same valid proof can be verified more than once, within the rate-limit budget and before its `expiry_ledger` passes | **Accepted risk, by design** — `contracts/verifier` has no nullifier/single-use tracking (see Known Limitations). Applications needing single-use semantics must implement their own replay protection |
 | Rate-limit storage growth (DoS via cost inflation) | Any address that can submit transactions (no special privilege) | Each new `(caller, window)` pair permanently occupies instance storage, which is loaded on every future invocation — this makes every future call incrementally more expensive over time, for everyone | **Tracked, unresolved** — filed as [zksoroban#178](https://github.com/yusufadeagbo/zksoroban/issues/178); the fix is moving this storage to Soroban's `temporary()` storage class |
-| Admin key compromise | Controls the private key configured as `admin` at contract construction | Can disable or misconfigure rate limiting (denial-of-service or resource-cost attack against the contract itself); **cannot** forge proofs or break confidentiality | **Accepted risk inherent to having an admin role at all** — standard key-management practices (cold storage, multi-sig) apply; not something this contract's code can mitigate on its own |
+| Admin key compromise | Controls the private key configured as `admin` at contract construction | Can disable or misconfigure rate limiting; can also call `update_vk` to install an arbitrary verifying key, letting the contract accept a proof for a false statement — a full soundness break, not just availability. Cannot read any private witness. | **Accepted risk inherent to having an admin role at all**, now a materially bigger one than before `update_vk` existed — standard key-management practices (cold storage, multi-sig, ideally a timelock on `update_vk` specifically) apply; not something this contract's code can mitigate on its own |
 | Malformed/adversarial proof bytes | Any address that can submit transactions | Attempting to trigger a panic or unexpected contract behavior with malformed byte lengths | **Mitigated** — `read_g1`/`read_g2` panic cleanly on wrong lengths, and Soroban's atomic transaction semantics roll back *all* state changes (including any rate-limit counter increment) on panic, so malformed submissions cannot even be used to grief the rate limit |
 | SDK encoding bug | None (this is a correctness risk, not an adversarial one) | A bug in `formatProof` could silently produce calldata that doesn't match what the prover actually proved, causing the contract to correctly reject a proof the application believed was valid (or, in the worst case, misencode in a way that happens to still parse) | **Mitigated** — property-based tests and fixed test vectors (`sdk/test/vectors.json`, `sdk/test/proof.property.test.ts`) assert the encoding against known-correct byte layouts across randomized and adversarial inputs |
 
@@ -126,10 +129,14 @@ If you are building on top of `zksoroban`:
 2. **Add your own replay/nullifier protection if your application needs
    single-use semantics** (voting, one-time claims, airdrops). Do not
    assume the contract does this for you — it does not.
-3. **Treat the admin key as a standard privileged key**, not a
-   cryptographic trust anchor. Secure it the way you would any contract
-   admin key (multi-sig, cold storage, timelocks if you add them) —
-   compromising it affects availability, not proof soundness.
+3. **Treat the admin key as a full cryptographic trust anchor, not just
+   a privileged operational key.** Since it can call `update_vk`,
+   compromising it means an attacker can make the contract accept
+   forged proofs — this is now equivalent in severity to compromising
+   the trusted setup itself. Secure it accordingly: multi-sig at
+   minimum, and strongly consider a timelock specifically on
+   `update_vk` so a compromise is at least visible and delayable before
+   it takes effect.
 4. **Don't rely on `verify_proof` alone for privacy of the fact that a
    verification happened.** If your application needs to hide *who*
    verified *when*, you need additional design beyond what this stack
