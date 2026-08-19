@@ -279,12 +279,15 @@ impl VerifierContract {
         let ledger = env.ledger().sequence();
         let window_start = ledger - (ledger % limits.window_size);
         let count_key = DataKey::CallCount(caller.clone(), window_start);
-        let current: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
         let next = current + 1;
         if next > limits.max_calls {
             return Err(Error::RateLimitExceeded);
         }
-        env.storage().instance().set(&count_key, &next);
+        env.storage().temporary().set(&count_key, &next);
+        env.storage()
+            .temporary()
+            .extend_ttl(&count_key, limits.window_size, limits.window_size);
 
         let proof_a = read_g1(&env, &proof_a, "proof_a");
         let proof_b = read_g2(&env, &proof_b, "proof_b");

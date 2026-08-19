@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Temporary as _;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, String, Vec};
 
@@ -216,6 +217,28 @@ fn window_expiry_resets_counter() {
     });
 
     assert!(call_valid(&env, &client, &caller));
+}
+
+#[test]
+fn call_count_lives_in_temporary_storage_with_window_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % 50u32);
+    let count_key = DataKey::CallCount(caller, window_start);
+
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().instance().has(&count_key));
+        assert!(env.storage().temporary().has(&count_key));
+        assert!(env.storage().temporary().get_ttl(&count_key) >= 50u32);
+    });
 }
 
 #[test]
