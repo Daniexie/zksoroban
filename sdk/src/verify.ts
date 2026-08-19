@@ -19,7 +19,8 @@ import {
   SorobanZkError,
   SorobanZkErrorCode,
   VerifyOptions,
-  VerifyResult
+  VerifyResult,
+  VerifyViaRegistryOptions
 } from "./types";
 import { validateCalldata } from "./validate";
 
@@ -216,6 +217,113 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       throw error;
     }
 
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// verifyViaRegistry — verify a proof against a circuit registered with
+// contracts/registry, keyed by circuit ID instead of a hardcoded VK
+// ---------------------------------------------------------------------------
+
+function resolveRegistryCalldata(opts: VerifyViaRegistryOptions): SorobanProofCalldata {
+  if (opts.calldata) {
+    return opts.calldata;
+  }
+
+  if (opts.bundle) {
+    return formatProof(opts.bundle.proof, opts.bundle.publicSignals);
+  }
+
+  throw new SorobanZkError(
+    "verifyViaRegistry requires either calldata or a bundle",
+    SorobanZkErrorCode.INVALID_PROOF_FORMAT
+  );
+}
+
+/**
+ * Verify a proof against a circuit registered with `contracts/registry`'s
+ * `verify_proof(id, proof_a, proof_b, proof_c, public_inputs)`.
+ *
+ * Unlike {@link verifyOnChain} (which targets the single-circuit
+ * `contracts/verifier` and requires a signing `keypair`, since that
+ * contract enforces per-caller auth and rate-limiting), the registry's
+ * `verify_proof` requires no auth and mutates no storage — so this is a
+ * simulation-only call, the same shape as {@link getContractConfig}. No
+ * transaction is submitted, no fee is charged, and no Keypair is needed.
+ *
+ * @example
+ * ```ts
+ * const verified = await verifyViaRegistry({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   registryContractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH",
+ *   circuitId: 2, // range_proof, once registered — see docs/multi-circuit.md
+ *   bundle,
+ * });
+ * ```
+ */
+export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise<boolean> {
+  const calldata = resolveRegistryCalldata(opts);
+  validateCalldata(calldata);
+
+  try {
+    const server = new rpc.Server(opts.rpcUrl, {
+      allowHttp: opts.rpcUrl.startsWith("http://")
+    });
+    const network = await server.getNetwork();
+
+    if (opts.bundle) {
+      assertBundleNetwork(opts.bundle, network.passphrase);
+    }
+
+    const contract = new Contract(opts.registryContractId);
+
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(
+        contract.call(
+          "verify_proof",
+          xdr.ScVal.scvU32(opts.circuitId),
+          makeBytesScVal(calldata.proofA),
+          makeBytesScVal(calldata.proofB),
+          makeBytesScVal(calldata.proofC),
+          makePublicInputsScVal(calldata.publicInputs)
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `verify_proof simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "verify_proof simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    return Boolean(scValToNative(simResult.result.retval));
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
     throw classifyError(error);
   }
 }
