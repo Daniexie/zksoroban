@@ -49,6 +49,23 @@ export interface VerifyResult {
   fee: string;
 }
 
+/**
+ * Options accepted by {@link verifyViaRegistry}.
+ *
+ * Unlike {@link VerifyOptions}, no `keypair` is needed: `contracts/registry`'s
+ * `verify_proof(id, ...)` requires no auth and mutates no storage, so this
+ * call is simulation-only, exactly like {@link GetContractConfigOptions}.
+ */
+export interface VerifyViaRegistryOptions {
+  rpcUrl: string;
+  /** Bech32m address of the deployed `contracts/registry` instance. */
+  registryContractId: string;
+  /** The `id` a circuit was registered under via `register_circuit`. */
+  circuitId: number;
+  calldata?: SorobanProofCalldata;
+  bundle?: ProofBundle;
+}
+
 export enum SorobanZkErrorCode {
   INVALID_PROOF_FORMAT = "INVALID_PROOF_FORMAT",
   INVALID_PUBLIC_INPUT = "INVALID_PUBLIC_INPUT",
@@ -56,7 +73,15 @@ export enum SorobanZkErrorCode {
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
   RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
-  NETWORK_MISMATCH = "NETWORK_MISMATCH"
+  NETWORK_MISMATCH = "NETWORK_MISMATCH",
+  // Mirror contracts/verifier's `Error` enum (contracterror, repr(u32)) so a
+  // caller can distinguish these from each other and from generic failures,
+  // instead of every contract-level rejection collapsing into `false`.
+  CONTRACT_NOT_INITIALIZED = "CONTRACT_NOT_INITIALIZED",
+  RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
+  INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
+  PROOF_EXPIRED = "PROOF_EXPIRED",
+  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED"
 }
 
 export class SorobanZkError extends Error {
@@ -86,5 +111,32 @@ export class NetworkMismatchError extends SorobanZkError {
     );
     this.name = "NetworkMismatchError";
   }
+}
+
+/**
+ * A read-only snapshot of all non-sensitive verifier contract configuration
+ * fields, as returned by the `get_config` contract function.
+ *
+ * Fields that the current contract does not implement (fee, timelock, etc.)
+ * are returned as `undefined` / `false` so callers can detect at runtime
+ * whether a feature is active without needing to know the contract version.
+ */
+export interface ContractConfig {
+  /** Contract administrator Stellar address (G… or C…). */
+  admin: string;
+  /** Whether the contract is paused. Always `false` in the current version. */
+  paused: boolean;
+  /** Optional fee amount in stroops. `undefined` when not configured. */
+  feeAmount: bigint | undefined;
+  /** Optional fee token contract address. `undefined` when not configured. */
+  feeToken: string | undefined;
+  /** Maximum `verify_proof` calls allowed per caller per rate-limit window. */
+  rateLimitMax: number;
+  /** Rate-limit window size in ledgers. */
+  rateLimitWindow: number;
+  /** Timelock delay in ledgers. `undefined` when not configured. */
+  timelockDelay: number | undefined;
+  /** Whether an allowlist is enforced. Always `false` in the current version. */
+  allowlistEnabled: boolean;
 }
 

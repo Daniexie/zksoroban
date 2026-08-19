@@ -143,6 +143,24 @@ security model (guarantees, trust assumptions, and threat model)
 that application developers building on `zksoroban` should read before
 relying on any of this.
 
+### Rate-Limit Storage
+
+`Admin` and `Limits` live in `env.storage().instance()` — small,
+rarely-changing config that should always be loaded with the contract.
+Per-caller `CallCount(Address, u32)` entries live in
+`env.storage().temporary()` instead, with `extend_ttl` called on every
+write so an entry survives at least the rest of its own rate-limit
+window before the ledger evicts it. This keeps instance storage from
+growing by one entry per `(caller, window)` pair for the contract's
+entire lifetime (see [`docs/security.md`](security.md) finding #6).
+
+Migrating an already-deployed contract instance to this scheme does
+not retroactively clean up anything: a code upgrade replaces the
+contract's logic, not its existing storage, so any `CallCount` entries
+an older deployment already wrote under `instance()` stay there,
+unread and unused by the new code, until that instance is redeployed
+from scratch.
+
 ## Demo Layer
 
 The demo script proves the full stack works on Testnet:
