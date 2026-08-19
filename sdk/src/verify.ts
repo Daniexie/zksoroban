@@ -10,7 +10,7 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
-import { formatProof } from "./proof";
+import { formatProof } from "./proof.js";
 import {
   ContractConfig,
   NetworkMismatchError,
@@ -21,8 +21,8 @@ import {
   VerifyOptions,
   VerifyResult,
   VerifyViaRegistryOptions
-} from "./types";
-import { validateCalldata } from "./validate";
+} from "./types.js";
+import { validateCalldata } from "./validate.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;

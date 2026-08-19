@@ -1,5 +1,5 @@
 // sdk/src/verifyOffChain.ts
-import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode, VerificationKey } from "./types";
+import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode, VerificationKey } from "./types.js";
 
 interface SnarkjsModule {
   groth16: {
@@ -10,8 +10,6 @@ interface SnarkjsModule {
     ): Promise<boolean>;
   };
 }
-
-const snarkjs: SnarkjsModule = require("snarkjs");
 
 export async function verifyOffChain(
   proof: SnarkjsProof,
@@ -54,5 +52,9 @@ export async function verifyOffChain(
     );
   }
 
+  // Loaded lazily (rather than at module scope) so that bundlers can
+  // tree-shake this entire module — and its snarkjs/ffjavascript dependency
+  // graph — out of consumers that never call verifyOffChain.
+  const snarkjs: SnarkjsModule = await import("snarkjs");
   return Boolean(await snarkjs.groth16.verify(verificationKey, publicSignals, proof));
 }

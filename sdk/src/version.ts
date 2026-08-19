@@ -1,6 +1,6 @@
 import { Account, Contract, Keypair, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
 
-import { SorobanZkError, SorobanZkErrorCode } from "./types";
+import { SorobanZkError, SorobanZkErrorCode } from "./types.js";
 
 const EXPECTED_CONTRACT_VERSION = "0.1.0";
 
