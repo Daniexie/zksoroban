@@ -2,8 +2,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::storage::Temporary as _;
-use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, String, Vec};
 
 const VK_ALPHA_G1: [u8; 64] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -549,6 +549,123 @@ fn update_vk_rejects_call_with_no_authorization() {
     let client = VerifierContractClient::new(&env, &contract_id);
 
     client.update_vk(&poseidon_vk(&env));
+}
+
+// verification_result event coverage: one test per outcome path that
+// actually returns via Ok(...) — wrong input count, malformed expiry
+// encoding (folded into the tampered/wrong-input tests below since there's
+// no dedicated helper to construct that byte pattern), and the pairing
+// check result itself. The allowlist/rate-limit/expiry rejections return
+// Err(...) and are deliberately NOT covered here: Soroban rolls back any
+// event published during a call that returns Err from a #[contracterror]
+// Result, so publishing on those paths would be dead code. See
+// verify_proof_emits_no_event_on_err_rejection below for the negative case,
+// and docs/architecture.md for the full writeup.
+
+fn expected_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    for input in public_inputs.iter() {
+        bytes.append(&Bytes::from(&input));
+    }
+    env.crypto().sha256(&bytes).to_bytes()
+}
+
+fn assert_single_verification_event(
+    env: &Env,
+    contract_id: &Address,
+    caller: &Address,
+    success: bool,
+    public_inputs: &Vec<BytesN<32>>,
+) {
+    let expected = VerificationResult {
+        success,
+        caller: caller.clone(),
+        inputs_hash: expected_inputs_hash(env, public_inputs),
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            env,
+            (contract_id.clone(), expected.topics(env), expected.data(env)),
+        ]
+    );
+}
+
+#[test]
+fn verify_proof_emits_event_on_pairing_success() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let public_inputs = public_inputs_with_expiry(&env, 1000);
+
+    let result = client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs,
+    );
+    assert!(result);
+
+    assert_single_verification_event(&env, &client.address, &caller, true, &public_inputs);
+}
+
+#[test]
+fn verify_proof_emits_event_on_pairing_failure() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
+    let public_inputs = public_inputs_with_expiry(&env, 1000);
+
+    let result = client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &tampered),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs,
+    );
+    assert!(!result);
+
+    assert_single_verification_event(&env, &client.address, &caller, false, &public_inputs);
+}
+
+#[test]
+fn verify_proof_emits_event_on_wrong_public_input_count() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+    let only_commitment = vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT)];
+
+    let result = client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &only_commitment,
+    );
+    assert!(!result);
+
+    assert_single_verification_event(&env, &client.address, &caller, false, &only_commitment);
+}
+
+#[test]
+fn verify_proof_emits_no_event_on_err_rejection() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.set_allowlist_mode(&true);
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+
+    assert!(env.events().all().events().is_empty());
 }
 
 // Two-step admin transfer and upgrade (#12).

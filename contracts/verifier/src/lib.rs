@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype,
+    contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, String, TryFromVal, Vec,
 };
@@ -74,6 +74,16 @@ pub enum Error {
     CallerNotAllowed = 5,
     InvalidVerifyingKey = 6,
     NoPendingAdmin = 7,
+}
+
+/// Emitted on every `verify_proof` call, regardless of outcome.
+#[contractevent(topics = ["zk", "verify"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerificationResult {
+    pub success: bool,
+    pub caller: Address,
+    /// sha256 of the concatenated public inputs, in call order.
+    pub inputs_hash: BytesN<32>,
 }
 
 #[contract]
@@ -330,12 +340,16 @@ impl VerifierContract {
         let proof_c = read_g1(&env, &proof_c, "proof_c");
 
         if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
+            publish_verification_result(&env, &caller, false, &public_inputs);
             return Ok(false);
         }
 
         let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
             Some(value) => value,
-            None => return Ok(false),
+            None => {
+                publish_verification_result(&env, &caller, false, &public_inputs);
+                return Ok(false);
+            }
         };
 
         if ledger > expiry_ledger {
@@ -363,8 +377,38 @@ impl VerifierContract {
             vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
         );
 
+        publish_verification_result(&env, &caller, verified, &public_inputs);
         Ok(verified)
     }
+}
+
+/// Publish the `verification_result` event for an outcome that returns via
+/// `Ok(...)`. Deliberately not called on the `Err(...)` paths above — Soroban
+/// rolls back all events published during a call that ultimately returns
+/// `Err` from a `#[contracterror]` `Result`, so publishing there would be a
+/// silent no-op. Those paths are already visible to callers as a failed
+/// transaction with a specific error code, which is at least as informative
+/// as this event's bare `success: bool` would be.
+fn publish_verification_result(
+    env: &Env,
+    caller: &Address,
+    success: bool,
+    public_inputs: &Vec<BytesN<32>>,
+) {
+    VerificationResult {
+        success,
+        caller: caller.clone(),
+        inputs_hash: compute_inputs_hash(env, public_inputs),
+    }
+    .publish(env);
+}
+
+fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    for input in public_inputs.iter() {
+        bytes.append(&Bytes::from(&input));
+    }
+    env.crypto().sha256(&bytes).to_bytes()
 }
 
 fn read_expiry_ledger(bytes: &BytesN<32>) -> Option<u32> {

@@ -161,6 +161,60 @@ an older deployment already wrote under `instance()` stay there,
 unread and unused by the new code, until that instance is redeployed
 from scratch.
 
+## Events
+
+Both `contracts/verifier::verify_proof` and `contracts/registry::verify_proof`
+publish a `verification_result` event on the outcome paths that return via
+`Ok(...)` — see [zksoroban#10](https://github.com/yusufadeagbo/zksoroban/issues/10).
+
+Topics: `["zk", "verify"]` (fixed, via `#[contractevent(topics = ["zk", "verify"])]`).
+
+Data (a map, one entry per field):
+
+| Field         | Type         | Verifier | Registry |
+|---------------|--------------|----------|----------|
+| `success`     | `bool`       | yes      | yes      |
+| `caller`      | `Address`    | yes      | no — registry's `verify_proof(id, ...)` takes no caller/auth argument |
+| `inputs_hash` | `BytesN<32>` | yes      | yes      |
+
+`inputs_hash` is **sha256** of the concatenated `public_inputs` bytes, in
+call order — not Poseidon. Poseidon is not available as a host primitive
+in this Soroban SDK version (only `sha256`/`keccak256` and the BN254/BLS12-381
+pairing operations are); the only existing Poseidon implementation in this
+repo (`sdk/src/poseidon.ts`) is a variable-arity implementation whose round
+constants are loaded at runtime from `circomlibjs`'s JS data tables, with no
+practical `no_std` Rust port. Since this hash only feeds off-chain indexers
+and monitoring — it is never re-consumed by a circuit or checked
+in-contract — Poseidon's SNARK-friendliness has no benefit here, so sha256
+was used instead.
+
+### Why the allowlist/rate-limit/expiry rejections in `contracts/verifier` don't emit an event
+
+Soroban rolls back **all** events published during a contract call whose
+top-level return is `Err(code)` from a `#[contracterror]`-typed `Result`
+(confirmed empirically against this repo's `soroban-sdk` version — the
+WASM ABI encodes a contract-level `Err` return as a failed invocation, and
+the host rolls back both storage and events to the state the call started
+with). `verify_proof` still returns `Err(Error::CallerNotAllowed)`,
+`Err(Error::RateLimitExceeded)`, and `Err(Error::ProofExpired)` for those
+three rejections, exactly as before this event was added — so publishing on
+those paths would be dead code; the event would never actually reach an
+indexer.
+
+Those three cases don't need the event to be observable, though: a failed
+`verify_proof` transaction already carries its specific `Error` variant
+(decoded by the SDK's typed-error mapping — see #184), which is at least as
+informative as this event's bare `success: bool` would have been. The event
+only adds real value on the paths that were genuinely silent before it
+existed and still return `Ok(...)`: wrong public input count, a malformed
+`expiry_ledger` encoding, and the pairing-check result itself. Those are
+the only three paths `contracts/verifier::verify_proof` publishes on.
+
+`contracts/registry::verify_proof` was never affected by this — it always
+returned a bare `bool`, never `Result`, so every one of its outcomes
+(unknown circuit ID, wrong input count, pairing result) publishes the
+event.
+
 ## Demo Layer
 
 The demo script proves the full stack works on Testnet:
